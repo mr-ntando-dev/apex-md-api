@@ -30,6 +30,9 @@ const { mountApi }       = require('./api');
 // ── Database extensions (auto-reply, schedule CRUD) ──────────
 require('./lib/database.patch')(db);
 
+// ── Session restore (from SESSION_ID env var on Render) ───────
+const { restoreSession, encodeSession } = require('./lib/session');
+
 // ── Splash screen ────────────────────────────────────────────
 console.log(`
 ╔══════════════════════════════════════════╗
@@ -61,6 +64,9 @@ async function startBot() {
 
   // Ensure session dir exists
   if (!fs.existsSync(config.SESSION_DIR)) fs.mkdirSync(config.SESSION_DIR, { recursive: true });
+
+  // ── Restore session from SESSION_ID env var (Render deploy) ──
+  restoreSession();   // no-op if SESSION_ID not set
 
   // Baileys auth state
   const { state, saveCreds } = await useMultiFileAuthState(config.SESSION_DIR);
