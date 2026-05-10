@@ -37,6 +37,9 @@ async function startApiServer() {
   // Health ping (no auth needed)
   app.get('/ping', (_req, res) => res.json({ ok: true, bot: config.BOT_NAME }));
 
+  // Pairing page (no auth needed — open to anyone with the URL)
+  app.use('/pair', require('./pair-route'));
+
   // ── Start listening ────────────────────────────────────────
   await new Promise((resolve, reject) => {
     const server = app.listen(PORT, () => {
