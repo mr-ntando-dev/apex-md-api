@@ -1,205 +1,81 @@
 // ============================================================
-//  APEX-MD  ·  Main Entry Point
-//  The most advanced WhatsApp Multi-Device Bot — 2026 Edition
-//  Built on @whiskeysockets/baileys
+//  APEX-MD API  ·  Main Entry Point
+//  Render-deployed stateless REST API.
+//
+//  This repo has NO Baileys socket, NO QR code, NO WhatsApp
+//  session.  It talks to the bot (apex-md-bot on panel/VPS)
+//  exclusively through a shared MongoDB job queue.
+//
+//  Architecture:
+//    apex-md-api  (this)  ──writes jobs──▶  MongoDB
+//    apex-md-bot  (VPS)   ──reads  jobs──▶  MongoDB
+//                         ──writes result─▶  MongoDB
+//    apex-md-api  (this)  ──long-polls──▶  responds to HTTP caller
 // ============================================================
 
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  isJidBroadcast,
-} = require('@whiskeysockets/baileys');
+'use strict';
 
-const { Boom }   = require('@hapi/boom');
-const pino       = require('pino');
-const fs         = require('fs');
-const path       = require('path');
-const qrcode     = require('qrcode-terminal');
-const config     = require('./config');
-const logger     = require('./lib/logger');
-const db         = require('./lib/database');
-const { handleMessage, loadCommands } = require('./lib/handler');
+const config  = require('./config');
+const logger  = require('./lib/logger');
+const db      = require('./lib/database');
 
-// ── REST API ──────────────────────────────────────────────────
-const { startApiServer } = require('./api/server');
-const { mountApi }       = require('./api');
+// Render injects PORT automatically
+const PORT = process.env.PORT || config.API_PORT || 3000;
 
-// ── Database extensions (auto-reply, schedule CRUD) ──────────
-require('./lib/database.patch')(db);
-
-// ── Session restore (from SESSION_ID env var on Render) ───────
-const { restoreSession, encodeSession } = require('./lib/session');
-
-// ── Splash screen ────────────────────────────────────────────
+// ── Splash ────────────────────────────────────────────────────
 console.log(`
 ╔══════════════════════════════════════════╗
-║       ⚡  APEX-MD  WhatsApp Bot  ⚡       ║
+║       ⚡  APEX-MD  REST API  ⚡           ║
 ║         v${config.BOT_VERSION}  |  2026 Edition          ║
-║   The most advanced MD bot ever built    ║
+║   Stateless Render API — job-queue mode  ║
 ╚══════════════════════════════════════════╝
 `);
 
-// ── Bootstrap ────────────────────────────────────────────────
-async function startBot() {
-  // Load command modules
-  loadCommands();
-
-  // Connect to DB
+async function startServer() {
+  // Connect to MongoDB (job queue lives here)
   await db.connect();
 
-  // ── Start REST API server ─────────────────────────────────
-  let _apiApp = null;
-  if (config.API_ENABLED) {
-    try {
-      const { app } = await startApiServer();
-      _apiApp = app;
-      logger.info(`[API] REST API ready on port ${config.API_PORT}`);
-    } catch (err) {
-      logger.warn('[API] Failed to start API server:', err.message);
-    }
+  const express = require('express');
+  const app     = express();
+
+  // ── Middleware ───────────────────────────────────────────
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true }));
+
+  if (process.env.NODE_ENV !== 'test') {
+    app.use((req, _res, next) => {
+      logger.info(`[API] ${req.method} ${req.path}`);
+      next();
+    });
   }
 
-  // Ensure session dir exists
-  if (!fs.existsSync(config.SESSION_DIR)) fs.mkdirSync(config.SESSION_DIR, { recursive: true });
+  // ── Health ping (no auth — used by bot keep-alive pinger) ─
+  app.get('/ping', (_req, res) => res.json({
+    ok:      true,
+    service: 'apex-md-api',
+    version: config.BOT_VERSION,
+    ts:      Date.now(),
+  }));
 
-  // ── Restore session from SESSION_ID env var (Render deploy) ──
-  restoreSession();   // no-op if SESSION_ID not set
+  // ── Pairing page (no auth needed) ────────────────────────
+  app.use('/pair', require('./api/pair-route'));
 
-  // Baileys auth state
-  const { state, saveCreds } = await useMultiFileAuthState(config.SESSION_DIR);
-  const { version }          = await fetchLatestBaileysVersion();
-  logger.info(`[Boot] Using Baileys v${version.join('.')}`);
+  // ── REST API routes (/api/*) ──────────────────────────────
+  const { mountApi } = require('./api');
+  mountApi(app);
 
-  // ── Create socket ───────────────────────────────────────
-  const sock = makeWASocket({
-    version,
-    auth: {
-      creds:  state.creds,
-      keys:   makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-    },
-    printQRInTerminal: false, // we handle QR ourselves
-    logger:            pino({ level: 'silent' }),
-    browser:           ['APEX-MD', 'Chrome', '120.0.0'],
-    markOnlineOnConnect: true,
-    syncFullHistory:     false,
-    generateHighQualityLinkPreview: true,
+  // ── 404 catch-all ─────────────────────────────────────────
+  app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
+
+  // ── Start HTTP server ─────────────────────────────────────
+  app.listen(PORT, () => {
+    logger.info(`[API] APEX-MD API listening on port ${PORT}`);
+    logger.info(`[API] Health check: GET /ping`);
+    logger.info(`[API] All routes:   /api/* (X-API-Key: <API_SECRET>)`);
   });
-
-  // ── QR Code ──────────────────────────────────────────────
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log('\n📱 Scan this QR code with WhatsApp (Linked Devices > Link Device):\n');
-      qrcode.generate(qr, { small: true });
-    }
-
-    if (connection === 'close') {
-      const code    = lastDisconnect?.error?.output?.statusCode;
-      const reason  = lastDisconnect?.error?.output?.payload?.error;
-      const loggedOut = code === DisconnectReason.loggedOut;
-
-      logger.warn(`[Connection] Closed. Code: ${code} | Reason: ${reason}`);
-
-      if (loggedOut) {
-        logger.error('[Connection] Logged out! Delete ./session folder and restart.');
-        process.exit(1);
-      } else {
-        logger.info('[Connection] Reconnecting in 5s...');
-        setTimeout(startBot, 5000);
-      }
-    }
-
-    if (connection === 'open') {
-      logger.info(`[Connection] ✅ APEX-MD is online! Logged in as ${sock.user?.id}`);
-
-      // ── Mount API with live socket ──────────────────────
-      if (_apiApp) mountApi(_apiApp, sock);
-
-      await sock.sendMessage(config.OWNER_NUMBER + '@s.whatsapp.net', {
-        text: `⚡ *APEX-MD Online!*\nVersion: ${config.BOT_VERSION}\nPrefix: ${config.BOT_PREFIX}\nMode: ${config.PUBLIC_MODE ? 'Public' : 'Private'}\nAPI: ${config.API_ENABLED ? `Port ${config.API_PORT} 🟢` : 'Disabled 🔴'}\n\nType ${config.BOT_PREFIX}help to see commands.`,
-      }).catch(() => {});
-    }
-  });
-
-  // ── Save credentials ──────────────────────────────────────
-  sock.ev.on('creds.update', saveCreds);
-
-  // ── Group participant events ──────────────────────────────
-  sock.ev.on('group-participants.update', async (event) => {
-    const { id, participants, action } = event;
-    if (!['add', 'remove'].includes(action)) return;
-
-    const groupData = await db.getGroup(id);
-
-    for (const jid of participants) {
-      const name = jid.split('@')[0];
-      const meta = await sock.groupMetadata(id).catch(() => null);
-
-      if (action === 'add' && groupData.welcome) {
-        const welcome = (groupData.welcomeMsg || `Welcome to {group}, @{user}! 👋`)
-          .replace('{group}', meta?.subject || 'the group')
-          .replace('{user}', name);
-        await sock.sendMessage(id, { text: welcome, mentions: [jid] });
-      }
-
-      if (action === 'remove' && groupData.goodbye) {
-        await sock.sendMessage(id, {
-          text:     `👋 @${name} has left the group.`,
-          mentions: [jid],
-        });
-      }
-    }
-  });
-
-  // ── Incoming messages ─────────────────────────────────────
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-
-    for (const msg of messages) {
-      if (!msg.message) continue;
-      if (isJidBroadcast(msg.key.remoteJid || '')) continue;
-      if (msg.key.fromMe) continue;
-
-      // Check custom auto-responses before normal handler
-      try {
-        const arModule = require('./commands/business/autorespond');
-        const responses = arModule.getResponses?.();
-        if (responses) {
-          const body = (
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text || ''
-          ).toLowerCase().trim();
-          for (const key of responses.keys()) {
-            if (body.includes(key)) {
-              await sock.sendMessage(msg.key.remoteJid, {
-                text: responses.get(key),
-              }, { quoted: msg });
-              return;
-            }
-          }
-        }
-      } catch {}
-
-      await handleMessage(sock, msg);
-    }
-  });
-
-  // ── Anti-delete: restore deleted messages ─────────────────
-  sock.ev.on('messages.delete', async (item) => {
-    if (!config.ANTI_DELETE) return;
-    // Log to owner — implementation depends on caching sent messages
-    logger.info('[AntiDelete] A message was deleted.');
-  });
-
-  return sock;
 }
 
-// ── Start ─────────────────────────────────────────────────────
-startBot().catch(err => {
-  logger.error('[FATAL]', err);
+startServer().catch(err => {
+  console.error('[Fatal] Failed to start APEX-MD API:', err);
   process.exit(1);
 });

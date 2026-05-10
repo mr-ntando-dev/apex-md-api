@@ -25,7 +25,7 @@ const logger  = require('../lib/logger');
 // In the split architecture the API never receives a socket.
 // The function is a no-op but we export it so the original
 // index.js doesn't crash if it still calls mountApi().
-function mountApi(app, _sock) {
+function mountApi(app) {
   app.use('/api', router);
   logger.info('[API] REST API mounted at /api (job-queue mode — no socket needed)');
 }
@@ -43,7 +43,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  * @param {object} payload  - Raw request body / params
  * @param {number} timeout  - Max wait in ms (default 10 s)
  */
-async function dispatch(type, payload, timeout = 10_000) {
+async function dispatch(type, payload, timeout = config.JOB_TIMEOUT_MS || 10_000) {
   const job      = await db.createJob(type, payload);
   const deadline = Date.now() + timeout;
 
@@ -81,9 +81,7 @@ router.get('/status', (req, res) => {
       heapUsed:  Math.round(mem.heapUsed  / 1024 / 1024) + ' MB',
       heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + ' MB',
     },
-    mode:   config.PUBLIC_MODE ? 'public' : 'private',
-    prefix: config.BOT_PREFIX,
-    note:   'Bot socket runs on panel. Use /api/bot/ping to check bot liveness.',
+    note:   'Bot socket runs on panel/VPS. Use /api/bot/ping to check bot liveness.',
   });
 });
 
@@ -154,7 +152,7 @@ router.get('/menu', (req, res) => {
     ok(res, {
       bot:        config.BOT_NAME,
       version:    config.BOT_VERSION,
-      prefix:     config.BOT_PREFIX,
+      service:    'apex-md-api',
       totalCmds:  total,
       categories: Object.values(catalogue),
     });
@@ -412,21 +410,16 @@ router.get('/bot/config', (_req, res) => {
   ok(res, {
     botName:      config.BOT_NAME,
     version:      config.BOT_VERSION,
-    prefix:       config.BOT_PREFIX,
-    publicMode:   config.PUBLIC_MODE,
-    autoRead:     config.AUTO_READ,
-    autoTyping:   config.AUTO_TYPING,
-    aiEnabled:    config.AI_ENABLED,
-    aiRouter:     config.AI_ROUTER,
-    guardianEnabled: config.GUARDIAN_ENABLED,
-    defaultLang:  config.DEFAULT_LANG,
+    jobTimeoutMs: config.JOB_TIMEOUT_MS,
+    note: 'Runtime bot config is managed in apex-md-bot. This API is stateless.',
   });
 });
 
 // ── 34. PATCH /api/bot/config  (runtime config overrides) ────
 router.patch('/bot/config', (req, res) => {
-  const allowed = ['BOT_NAME', 'BOT_PREFIX', 'PUBLIC_MODE', 'AUTO_READ',
-                   'AUTO_TYPING', 'AI_ENABLED', 'AI_ROUTER', 'DEFAULT_LANG'];
+  // Bot runtime config lives in apex-md-bot.
+  // The API only exposes its own server-level settings here.
+  const allowed = ['BOT_NAME', 'JOB_TIMEOUT_MS'];
   const updated = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
@@ -437,32 +430,28 @@ router.patch('/bot/config', (req, res) => {
   ok(res, { updated });
 });
 
-// ── 35. POST /api/ai  — Call AI engine directly ──────────────
+// ── 35. POST /api/ai  — Proxied through bot job queue ────────
+// AI engine lives in the bot — we dispatch a job for it.
 router.post('/ai', async (req, res) => {
   const { message, userId = 'api-user' } = req.body;
   if (!message) return fail(res, 'message required');
   try {
-    const { aiReply } = require('../lib/ai');
-    const reply = await aiReply(userId, message);
+    const reply = await dispatch('ai', { message, userId });
     ok(res, { reply });
-  } catch (e) { fail(res, e.message, 500); }
+  } catch (e) { fail(res, e.message, 503); }
 });
 
 // ── 36. GET  /api/plugins ─────────────────────────────────────
-router.get('/plugins', (_req, res) => {
-  try {
-    const { listPlugins } = require('../lib/pluginLoader');
-    ok(res, { plugins: listPlugins() });
-  } catch (e) { fail(res, e.message, 500); }
+// Plugin list is managed in the bot. We proxy via job queue.
+router.get('/plugins', async (_req, res) => {
+  try { ok(res, await dispatch('plugins-list', {})); }
+  catch (e) { fail(res, e.message, 503); }
 });
 
 // ── 37. DELETE /api/plugins/:name ────────────────────────────
-router.delete('/plugins/:name', (req, res) => {
-  try {
-    const { unloadPlugin } = require('../lib/pluginLoader');
-    unloadPlugin(req.params.name);
-    ok(res, { unloaded: req.params.name });
-  } catch (e) { fail(res, e.message, 400); }
+router.delete('/plugins/:name', async (req, res) => {
+  try { ok(res, await dispatch('plugins-unload', { name: req.params.name })); }
+  catch (e) { fail(res, e.message, 503); }
 });
 
 // ── 38. GET  /api/chats  — Read from DB (no socket needed) ───
