@@ -1,0 +1,96 @@
+# ============================================================
+#  APEX-MD · Render Deployment Blueprint
+#  Deploy at: https://dashboard.render.com/select-repo
+#  Docs: https://render.com/docs/blueprint-spec
+# ============================================================
+
+services:
+  - type: web
+    name: apex-md
+    runtime: node
+    region: oregon          # change to: ohio | singapore | frankfurt | virginia
+    plan: starter           # free | starter | standard | pro
+    branch: main
+
+    # ── Build ────────────────────────────────────────────────
+    buildCommand: npm install
+    startCommand: node index.js
+
+    # ── Health check ─────────────────────────────────────────
+    # Render pings this to confirm the service is alive.
+    # The /ping route requires no auth.
+    healthCheckPath: /ping
+
+    # ── Persistent disk (session storage) ────────────────────
+    # WhatsApp session files must survive restarts.
+    disk:
+      name: apex-session
+      mountPath: /opt/render/project/src/session
+      sizeGB: 1
+
+    # ── Environment variables ─────────────────────────────────
+    # Set these in Render dashboard → Environment tab.
+    # Never commit real values to git.
+    envVars:
+      # ── Required ──────────────────────────────────────────
+      - key: OWNER_NUMBER
+        sync: false           # prompt in Render UI
+
+      - key: API_SECRET
+        generateValue: true   # Render auto-generates a secure random value
+
+      # ── API Server ────────────────────────────────────────
+      - key: API_PORT
+        value: "3000"
+      - key: API_ENABLED
+        value: "true"
+
+      # ── Node / Runtime ────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+
+      # ── Bot identity (optional overrides) ────────────────
+      - key: BOT_NAME
+        value: APEX-MD
+      - key: BOT_PREFIX
+        value: "."
+      - key: PUBLIC_MODE
+        value: "false"
+
+      # ── AI Keys (at least one required) ──────────────────
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # ── Optional AI keys ──────────────────────────────────
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: STABILITY_API_KEY
+        sync: false
+      - key: PERPLEXITY_API_KEY
+        sync: false
+
+      # ── Data ─────────────────────────────────────────────
+      - key: MONGODB_URI
+        sync: false           # paste your MongoDB Atlas URI
+
+      # ── Media / Utility ───────────────────────────────────
+      - key: TENOR_API_KEY
+        sync: false
+      - key: WEATHER_API_KEY
+        sync: false
+      - key: NEWS_API_KEY
+        sync: false
+      - key: AUDD_API_KEY
+        sync: false
+      - key: URLSCAN_API_KEY
+        sync: false
+
+      # ── Logging ───────────────────────────────────────────
+      - key: LOG_LEVEL
+        value: info

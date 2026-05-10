@@ -23,6 +23,13 @@ const logger     = require('./lib/logger');
 const db         = require('./lib/database');
 const { handleMessage, loadCommands } = require('./lib/handler');
 
+// ── REST API ──────────────────────────────────────────────────
+const { startApiServer } = require('./api/server');
+const { mountApi }       = require('./api');
+
+// ── Database extensions (auto-reply, schedule CRUD) ──────────
+require('./lib/database.patch')(db);
+
 // ── Splash screen ────────────────────────────────────────────
 console.log(`
 ╔══════════════════════════════════════════╗
@@ -39,6 +46,18 @@ async function startBot() {
 
   // Connect to DB
   await db.connect();
+
+  // ── Start REST API server ─────────────────────────────────
+  let _apiApp = null;
+  if (config.API_ENABLED) {
+    try {
+      const { app } = await startApiServer();
+      _apiApp = app;
+      logger.info(`[API] REST API ready on port ${config.API_PORT}`);
+    } catch (err) {
+      logger.warn('[API] Failed to start API server:', err.message);
+    }
+  }
 
   // Ensure session dir exists
   if (!fs.existsSync(config.SESSION_DIR)) fs.mkdirSync(config.SESSION_DIR, { recursive: true });
@@ -90,8 +109,12 @@ async function startBot() {
 
     if (connection === 'open') {
       logger.info(`[Connection] ✅ APEX-MD is online! Logged in as ${sock.user?.id}`);
+
+      // ── Mount API with live socket ──────────────────────
+      if (_apiApp) mountApi(_apiApp, sock);
+
       await sock.sendMessage(config.OWNER_NUMBER + '@s.whatsapp.net', {
-        text: `⚡ *APEX-MD Online!*\nVersion: ${config.BOT_VERSION}\nPrefix: ${config.BOT_PREFIX}\nMode: ${config.PUBLIC_MODE ? 'Public' : 'Private'}\n\nType ${config.BOT_PREFIX}help to see commands.`,
+        text: `⚡ *APEX-MD Online!*\nVersion: ${config.BOT_VERSION}\nPrefix: ${config.BOT_PREFIX}\nMode: ${config.PUBLIC_MODE ? 'Public' : 'Private'}\nAPI: ${config.API_ENABLED ? `Port ${config.API_PORT} 🟢` : 'Disabled 🔴'}\n\nType ${config.BOT_PREFIX}help to see commands.`,
       }).catch(() => {});
     }
   });

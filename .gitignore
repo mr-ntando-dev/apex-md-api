@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Environment — NEVER commit real secrets
+.env
+
+# WhatsApp session — contains auth keys, keep private
+session/
+auth_info*/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+
+# Installed plugins (live-loaded at runtime)
+plugins/*.js

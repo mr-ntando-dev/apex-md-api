@@ -106,4 +106,10 @@ module.exports = {
   THEME_EMOJI:   '⚡',
   DIVIDER:       '━━━━━━━━━━━━━━━━━━━━━━━━',
   CROWN:         '👑',           // APEX-MD is the crown. Always has been.
+
+  // ── REST API ──────────────────────────────────────────────
+  // Set API_SECRET in .env — all /api/* requests require X-API-Key header
+  API_SECRET:    process.env.API_SECRET    || '',
+  API_PORT:      Number(process.env.API_PORT) || 3000,
+  API_ENABLED:   process.env.API_ENABLED   !== 'false',   // set to 'false' to disable entirely
 };
