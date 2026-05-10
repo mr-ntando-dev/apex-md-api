@@ -466,17 +466,6 @@ router.get('/chats', async (_req, res) => {
 
 // ════════════════════════════════════════════════════════════
 //  39. POST /api/download
-//  Proxies all media downloads through the bot (Render IP stays
-//  hidden from TikTok / IG / YouTube etc).
-//
-//  Body: { url, type }
-//    url   — the media URL to download
-//    type  — optional hint: 'video' | 'audio' (default: video)
-//
-//  Returns: { buffer (base64), mimetype, filename }
-//  The bot does the actual download using cobalt v11 /
-//  @distube/ytdl-core and returns the buffer back here.
-//  Timeout is raised to 90s — large files take time.
 // ════════════════════════════════════════════════════════════
 router.post('/download', async (req, res) => {
   const { url, type } = req.body;
@@ -485,6 +474,460 @@ router.post('/download', async (req, res) => {
     const result = await dispatch('download', { url, type: type || 'video' }, 90_000);
     ok(res, result);
   } catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  ADMIN — Group management
+// ════════════════════════════════════════════════════════════
+
+// 40. POST /api/admin/warn  — warn a user (3-strike auto-kick)
+router.post('/admin/warn', async (req, res) => {
+  try { ok(res, await dispatch('admin/warn', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 41. POST /api/admin/resetwarn
+router.post('/admin/resetwarn', async (req, res) => {
+  try { ok(res, await dispatch('admin/resetwarn', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 42. GET /api/admin/warnings/:groupJid/:number
+router.get('/admin/warnings/:groupJid/:number', async (req, res) => {
+  try { ok(res, await dispatch('admin/warnings', { groupJid: req.params.groupJid, number: req.params.number })); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 43. POST /api/admin/antidelete
+router.post('/admin/antidelete', async (req, res) => {
+  const { groupJid, enabled } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    await db.setGroup(groupJid, { antiDelete: !!enabled });
+    ok(res, { groupJid, antiDelete: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 44. POST /api/admin/antilink
+router.post('/admin/antilink', async (req, res) => {
+  const { groupJid, enabled, action } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    const update = {};
+    if (typeof enabled !== 'undefined') update.antiLink = !!enabled;
+    if (action) update.antiLinkAction = action;
+    await db.setGroup(groupJid, update);
+    ok(res, { groupJid, ...update });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 45. POST /api/admin/antispam
+router.post('/admin/antispam', async (req, res) => {
+  const { groupJid, enabled } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    await db.setGroup(groupJid, { antiSpam: !!enabled });
+    ok(res, { groupJid, antiSpam: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 46. POST /api/admin/tagall  — mention all group members
+router.post('/admin/tagall', async (req, res) => {
+  try { ok(res, await dispatch('admin/tagall', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 47. POST /api/admin/hidetag  — silent mention all
+router.post('/admin/hidetag', async (req, res) => {
+  try { ok(res, await dispatch('admin/hidetag', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 48. POST /api/admin/setdesc
+router.post('/admin/setdesc', async (req, res) => {
+  try { ok(res, await dispatch('admin/setdesc', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 49. POST /api/admin/setname
+router.post('/admin/setname', async (req, res) => {
+  try { ok(res, await dispatch('admin/setname', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 50. POST /api/admin/poll
+router.post('/admin/poll', async (req, res) => {
+  try { ok(res, await dispatch('admin/poll', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 51. POST /api/admin/filter  — group keyword auto-reply
+router.post('/admin/filter', async (req, res) => {
+  try { ok(res, await dispatch('admin/filter', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 52. GET /api/admin/groupinfo/:groupJid
+router.get('/admin/groupinfo/:groupJid', async (req, res) => {
+  try { ok(res, await dispatch('admin/groupinfo', { groupJid: req.params.groupJid })); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  PROTECTION
+// ════════════════════════════════════════════════════════════
+
+// 53. POST /api/protection/anticall
+router.post('/protection/anticall', async (req, res) => {
+  const { enabled } = req.body;
+  try {
+    await db.setGroup('global', { antiCall: !!enabled });
+    ok(res, { antiCall: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 54. POST /api/protection/antidemote
+router.post('/protection/antidemote', async (req, res) => {
+  const { groupJid, enabled } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    await db.setGroup(groupJid, { antiDemote: !!enabled });
+    ok(res, { groupJid, antiDemote: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 55. POST /api/protection/antifake
+router.post('/protection/antifake', async (req, res) => {
+  const { groupJid, enabled, allowedCodes } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    const update = { antiFake: !!enabled };
+    if (allowedCodes) update.antiFakeAllowed = allowedCodes;
+    await db.setGroup(groupJid, update);
+    ok(res, { groupJid, ...update });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 56. POST /api/protection/antigm
+router.post('/protection/antigm', async (req, res) => {
+  const { groupJid, enabled } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    await db.setGroup(groupJid, { antiGm: !!enabled });
+    ok(res, { groupJid, antiGm: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 57. POST /api/protection/antivv
+router.post('/protection/antivv', async (req, res) => {
+  const { groupJid, enabled } = req.body;
+  if (!groupJid) return fail(res, 'groupJid required');
+  try {
+    await db.setGroup(groupJid, { antiVV: !!enabled });
+    ok(res, { groupJid, antiVV: !!enabled });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  OWNER
+// ════════════════════════════════════════════════════════════
+
+// 58. POST /api/owner/ban
+router.post('/owner/ban', async (req, res) => {
+  const { number } = req.body;
+  if (!number) return fail(res, 'number required');
+  try {
+    const id = number + '@s.whatsapp.net';
+    await db.setUser(id, { banned: true });
+    ok(res, { banned: true, id });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 59. POST /api/owner/unban
+router.post('/owner/unban', async (req, res) => {
+  const { number } = req.body;
+  if (!number) return fail(res, 'number required');
+  try {
+    const id = number + '@s.whatsapp.net';
+    await db.setUser(id, { banned: false });
+    ok(res, { banned: false, id });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 60. POST /api/owner/mode  — public/private
+router.post('/owner/mode', async (req, res) => {
+  try { ok(res, await dispatch('owner/mode', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 61. POST /api/owner/setprefix
+router.post('/owner/setprefix', async (req, res) => {
+  try { ok(res, await dispatch('owner/setprefix', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 62. POST /api/owner/restart
+router.post('/owner/restart', async (req, res) => {
+  try { ok(res, await dispatch('owner/restart', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  GAMES & ECONOMY  (read from DB directly — no socket needed)
+// ════════════════════════════════════════════════════════════
+
+// 63. GET /api/games/balance/:number
+router.get('/games/balance/:number', async (req, res) => {
+  try { ok(res, await dispatch('games/balance', { number: req.params.number })); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 64. POST /api/games/daily  — claim daily coins
+router.post('/games/daily', async (req, res) => {
+  try { ok(res, await dispatch('games/daily', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 65. POST /api/games/work
+router.post('/games/work', async (req, res) => {
+  try { ok(res, await dispatch('games/work', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 66. POST /api/games/slots
+router.post('/games/slots', async (req, res) => {
+  try { ok(res, await dispatch('games/slots', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 67. POST /api/games/flip
+router.post('/games/flip', async (req, res) => {
+  try { ok(res, await dispatch('games/flip', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 68. POST /api/games/pay
+router.post('/games/pay', async (req, res) => {
+  try { ok(res, await dispatch('games/pay', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 69. POST /api/games/rob
+router.post('/games/rob', async (req, res) => {
+  try { ok(res, await dispatch('games/rob', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 70. GET /api/games/leaderboard
+router.get('/games/leaderboard', async (_req, res) => {
+  try { ok(res, await dispatch('games/leaderboard', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 71. GET /api/games/profile/:number
+router.get('/games/profile/:number', async (req, res) => {
+  try { ok(res, await dispatch('games/profile', { number: req.params.number })); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  FUN
+// ════════════════════════════════════════════════════════════
+
+// 72. GET /api/fun/joke
+router.get('/fun/joke', async (_req, res) => {
+  try { ok(res, await dispatch('fun/joke', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 73. GET /api/fun/meme
+router.get('/fun/meme', async (_req, res) => {
+  try { ok(res, await dispatch('fun/meme', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 74. GET /api/fun/fact
+router.get('/fun/fact', async (_req, res) => {
+  try { ok(res, await dispatch('fun/fact', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 75. GET /api/fun/quote
+router.get('/fun/quote', async (_req, res) => {
+  try { ok(res, await dispatch('fun/quote', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 76. POST /api/fun/8ball
+router.post('/fun/8ball', async (req, res) => {
+  try { ok(res, await dispatch('fun/8ball', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 77. POST /api/fun/ship
+router.post('/fun/ship', async (req, res) => {
+  try { ok(res, await dispatch('fun/ship', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 78. POST /api/fun/choose
+router.post('/fun/choose', async (req, res) => {
+  try { ok(res, await dispatch('fun/choose', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 79. GET /api/fun/truth
+router.get('/fun/truth', async (_req, res) => {
+  try { ok(res, await dispatch('fun/truth', {})); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 80. POST /api/fun/horoscope
+router.post('/fun/horoscope', async (req, res) => {
+  try { ok(res, await dispatch('fun/horoscope', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 81. POST /api/fun/roll
+router.post('/fun/roll', async (req, res) => {
+  try { ok(res, await dispatch('fun/roll', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  UTILITY
+// ════════════════════════════════════════════════════════════
+
+// 82. POST /api/utility/translate
+router.post('/utility/translate', async (req, res) => {
+  try { ok(res, await dispatch('utility/translate', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 83. POST /api/utility/weather
+router.post('/utility/weather', async (req, res) => {
+  try { ok(res, await dispatch('utility/weather', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 84. POST /api/utility/wikipedia
+router.post('/utility/wikipedia', async (req, res) => {
+  try { ok(res, await dispatch('utility/wikipedia', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 85. POST /api/utility/qr  — generate QR code image (base64)
+router.post('/utility/qr', async (req, res) => {
+  try { ok(res, await dispatch('utility/qr', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 86. POST /api/utility/shazam
+router.post('/utility/shazam', async (req, res) => {
+  try { ok(res, await dispatch('utility/shazam', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 87. POST /api/utility/tts  — text to speech (returns audio buffer base64)
+router.post('/utility/tts', async (req, res) => {
+  try { ok(res, await dispatch('utility/tts', req.body), 30_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 88. POST /api/utility/ascii
+router.post('/utility/ascii', async (req, res) => {
+  try { ok(res, await dispatch('utility/ascii', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 89. POST /api/utility/base64
+router.post('/utility/base64', async (req, res) => {
+  try { ok(res, await dispatch('utility/base64', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 90. POST /api/utility/calc
+router.post('/utility/calc', async (req, res) => {
+  try { ok(res, await dispatch('utility/calc', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 91. POST /api/utility/virus  — URL virus scan
+router.post('/utility/virus', async (req, res) => {
+  try { ok(res, await dispatch('utility/virus', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  MEDIA
+// ════════════════════════════════════════════════════════════
+
+// 92. POST /api/media/sticker  — image/video → sticker (base64 in, base64 out)
+router.post('/media/sticker', async (req, res) => {
+  try { ok(res, await dispatch('media/sticker', req.body), 30_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 93. POST /api/media/tts
+router.post('/media/tts', async (req, res) => {
+  try { ok(res, await dispatch('utility/tts', req.body), 30_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 94. POST /api/media/toaudio  — video → audio strip
+router.post('/media/toaudio', async (req, res) => {
+  try { ok(res, await dispatch('media/toaudio', req.body), 60_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 95. POST /api/media/toimg  — video → image thumbnail
+router.post('/media/toimg', async (req, res) => {
+  try { ok(res, await dispatch('media/toimg', req.body), 30_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// 96. POST /api/media/logo  — generate text logo image
+router.post('/media/logo', async (req, res) => {
+  try { ok(res, await dispatch('media/logo', req.body), 30_000); }
+  catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  BUSINESS
+// ════════════════════════════════════════════════════════════
+
+// 97. POST /api/business/autorespond  — set/get auto-respond rules
+router.post('/business/autorespond', async (req, res) => {
+  const { keyword, reply, exact } = req.body;
+  if (!keyword || !reply) return fail(res, 'keyword and reply required');
+  try {
+    const rule = await db.setAutoReply(keyword, { reply, exact });
+    ok(res, rule);
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// 98. GET /api/business/autorespond
+router.get('/business/autorespond', async (_req, res) => {
+  try { ok(res, await db.getAllAutoReplies()); }
+  catch (e) { fail(res, e.message, 500); }
+});
+
+// 99. DELETE /api/business/autorespond/:keyword
+router.delete('/business/autorespond/:keyword', async (req, res) => {
+  try {
+    await db.deleteAutoReply(req.params.keyword);
+    ok(res, { deleted: req.params.keyword });
+  } catch (e) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════
+//  ANIME
+// ════════════════════════════════════════════════════════════
+
+// 100. POST /api/anime/react  — send anime reaction GIF
+router.post('/anime/react', async (req, res) => {
+  try { ok(res, await dispatch('anime/react', req.body)); }
+  catch (e) { fail(res, e.message, 503); }
 });
 
 // ════════════════════════════════════════════════════════════
