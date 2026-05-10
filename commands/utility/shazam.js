@@ -28,7 +28,7 @@ module.exports = {
       const lines = [
         '🎵 *Song Identified!*', '━━━━━━━━━━━━━━━━━━━━━━━━',
         `🎤 *Artist:* ${s.artist}`, `📀 *Title:* ${s.title}`,
-        `💿 *Album:* ${s.album || 'Unknown'}`, `📅 *Release:* ${s.release_date || 'Unknown'}',
+        `💿 *Album:* ${s.album || 'Unknown'}`, `📅 *Release:* ${s.release_date || 'Unknown'}`,
         s.spotify ? `🟢 *Spotify:* ${s.spotify?.external_urls?.spotify || 'N/A'}` : '',
         '━━━━━━━━━━━━━━━━━━━━━━━━',
       ].filter(Boolean);
