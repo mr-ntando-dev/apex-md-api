@@ -76,15 +76,17 @@ async function pair() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  let pairingRequested = false;
+
   // Request pairing code after socket is ready
   sock.ev.on('connection.update', async (update) => {
     const { connection, qr, lastDisconnect } = update;
 
-    // As soon as socket is open to WA servers, request pairing code
-    if (qr || connection === 'connecting') {
-      if (!sock.authState.creds.registered) {
-        await new Promise(r => setTimeout(r, 3000)); // let socket stabilise
-        try {
+    // Request pairing code once the socket is connecting and QR would normally appear
+    if ((qr || connection === 'connecting') && !pairingRequested && !sock.authState.creds.registered) {
+      pairingRequested = true;
+      await new Promise(r => setTimeout(r, 1500)); // let socket stabilise
+      try {
           const code = await sock.requestPairingCode(number);
           const formatted = code.match(/.{1,4}/g)?.join('-') || code;
           console.log('\n' + '═'.repeat(50));
