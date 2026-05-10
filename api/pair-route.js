@@ -1,18 +1,12 @@
 // ============================================================
-//  APEX-MD · Web Pairing Route
-//  Mounted at /pair  (no auth needed — public page)
-//
-//  Flow:
-//    1. GET  /pair          → shows the pairing HTML page
-//    2. POST /pair/request  → generates pairing code for number
-//    3. GET  /pair/status   → polling — returns session once paired
+//  APEX-MD · Web Pairing Route  (QR + Pairing Code)
+//  Mounted at /pair  (no auth needed)
 // ============================================================
 
 'use strict';
 
 const express  = require('express');
 const router   = express.Router();
-const path     = require('path');
 const fs       = require('fs');
 const pino     = require('pino');
 
@@ -26,343 +20,332 @@ const {
 
 const { encodeSession } = require('../lib/session');
 
-// ── State ─────────────────────────────────────────────────────
-let pairState = {
-  status:    'idle',      // idle | waiting | paired | error
-  code:      null,
-  sessionId: null,
-  error:     null,
-  sock:      null,
-};
+// ── Shared state ──────────────────────────────────────────────
+let S = { status:'idle', mode:null, qrData:null, code:null, sessionId:null, error:null, sock:null, dir:null };
 
-function resetState() {
-  if (pairState.sock) {
-    try { pairState.sock.end(); } catch (_) {}
-  }
-  pairState = { status: 'idle', code: null, sessionId: null, error: null, sock: null };
+function reset() {
+  if (S.sock)  { try { S.sock.end(); } catch(_){} }
+  if (S.dir)   { try { fs.rmSync(S.dir,{recursive:true,force:true}); } catch(_){} }
+  S = { status:'idle', mode:null, qrData:null, code:null, sessionId:null, error:null, sock:null, dir:null };
 }
 
-// ── GET /pair — HTML pairing page ────────────────────────────
+async function mkSock(dir) {
+  const { state, saveCreds } = await useMultiFileAuthState(dir);
+  const { version }          = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({
+    version,
+    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({level:'silent'})) },
+    printQRInTerminal: false,
+    logger: pino({level:'silent'}),
+    browser: ['APEX-MD','Chrome','120.0.0'],
+  });
+  sock.ev.on('creds.update', saveCreds);
+  return sock;
+}
+
+async function handleOpen(dir) {
+  await new Promise(r => setTimeout(r, 2500));
+  S.sessionId = encodeSession(dir);
+  S.status    = 'paired';
+  try { fs.rmSync(dir,{recursive:true,force:true}); } catch(_){}
+}
+
+// ════════════════════════════════════════════════════════════
+//  GET /pair  — full HTML page (QR + Pairing Code tabs)
+// ════════════════════════════════════════════════════════════
 router.get('/', (_req, res) => {
-  res.send(`<!DOCTYPE html>
+  res.setHeader('Content-Type','text/html');
+  res.end(`<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>APEX-MD · Pair Your Bot</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0a0a0a;
-      color: #e0e0e0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-    }
-    .card {
-      background: #141414;
-      border: 1px solid #2a2a2a;
-      border-radius: 16px;
-      padding: 40px;
-      width: 100%;
-      max-width: 480px;
-      text-align: center;
-    }
-    .logo { font-size: 2.5rem; margin-bottom: 8px; }
-    h1 { font-size: 1.4rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
-    .sub { font-size: 0.9rem; color: #666; margin-bottom: 32px; }
-    .step {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 16px;
-      text-align: left;
-    }
-    .step-label { font-size: 0.75rem; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-    input {
-      width: 100%;
-      background: #0f0f0f;
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 12px 16px;
-      color: #fff;
-      font-size: 1rem;
-      outline: none;
-      transition: border 0.2s;
-    }
-    input:focus { border-color: #25D366; }
-    input::placeholder { color: #444; }
-    button {
-      width: 100%;
-      background: #25D366;
-      color: #000;
-      border: none;
-      border-radius: 8px;
-      padding: 14px;
-      font-size: 1rem;
-      font-weight: 700;
-      cursor: pointer;
-      margin-top: 16px;
-      transition: background 0.2s;
-    }
-    button:hover { background: #1db954; }
-    button:disabled { background: #333; color: #666; cursor: not-allowed; }
-    .code-box {
-      display: none;
-      background: #0f0f0f;
-      border: 2px solid #25D366;
-      border-radius: 12px;
-      padding: 24px;
-      margin-top: 20px;
-    }
-    .code-box .label { font-size: 0.8rem; color: #25D366; margin-bottom: 8px; }
-    .code-box .code {
-      font-size: 2.5rem;
-      font-weight: 900;
-      letter-spacing: 8px;
-      color: #fff;
-      font-family: monospace;
-    }
-    .code-box .hint { font-size: 0.8rem; color: #555; margin-top: 10px; }
-    .session-box {
-      display: none;
-      background: #0a1a0f;
-      border: 2px solid #25D366;
-      border-radius: 12px;
-      padding: 20px;
-      margin-top: 20px;
-      text-align: left;
-    }
-    .session-box .s-label { font-size: 0.8rem; color: #25D366; margin-bottom: 8px; font-weight: 700; }
-    textarea {
-      width: 100%;
-      background: #0f0f0f;
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 10px;
-      color: #aaa;
-      font-size: 0.7rem;
-      font-family: monospace;
-      resize: none;
-      height: 80px;
-      outline: none;
-    }
-    .copy-btn {
-      background: #25D366;
-      color: #000;
-      border: none;
-      border-radius: 6px;
-      padding: 10px 20px;
-      font-weight: 700;
-      cursor: pointer;
-      margin-top: 10px;
-      width: 100%;
-    }
-    .status { font-size: 0.85rem; color: #666; margin-top: 16px; min-height: 20px; }
-    .status.green { color: #25D366; }
-    .status.red   { color: #ff4444; }
-    .instructions { font-size: 0.82rem; color: #555; line-height: 1.7; margin-top: 20px; text-align: left; }
-    .instructions b { color: #aaa; }
-  </style>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>APEX-MD · Pair</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#141414;border:1px solid #222;border-radius:16px;padding:36px;width:100%;max-width:480px;text-align:center}
+.logo{font-size:2.2rem;margin-bottom:6px}
+h1{font-size:1.35rem;font-weight:700;color:#fff;margin-bottom:4px}
+.sub{font-size:.85rem;color:#555;margin-bottom:26px}
+.tabs{display:flex;gap:8px;margin-bottom:22px}
+.tab{flex:1;padding:11px;border-radius:10px;border:1px solid #222;background:#1a1a1a;color:#555;font-size:.88rem;font-weight:600;cursor:pointer;transition:all .2s}
+.tab.active{background:#25D366;color:#000;border-color:#25D366}
+.panel{display:none}.panel.active{display:block}
+.lbl{font-size:.72rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:7px;text-align:left}
+input{width:100%;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:8px;padding:12px 15px;color:#fff;font-size:.95rem;outline:none;transition:border .2s}
+input:focus{border-color:#25D366}
+input::placeholder{color:#3a3a3a}
+.btn{width:100%;background:#25D366;color:#000;border:none;border-radius:8px;padding:13px;font-size:.95rem;font-weight:700;cursor:pointer;margin-top:13px;transition:background .2s}
+.btn:hover{background:#1db954}.btn:disabled{background:#222;color:#555;cursor:not-allowed}
+.btn-ghost{background:transparent;border:1px solid #2a2a2a;color:#555;margin-top:8px}
+.btn-ghost:hover{border-color:#444;color:#888;background:transparent}
+
+/* QR */
+.qr-box{display:none;margin-top:18px;text-align:center}
+.qr-box .ql{font-size:.75rem;color:#25D366;font-weight:600;margin-bottom:10px}
+#qrEl{display:inline-flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:14px}
+.qr-hint{font-size:.75rem;color:#555;margin-top:8px}
+.qr-exp{font-size:.72rem;color:#f59e0b;margin-top:5px;min-height:16px}
+
+/* Code */
+.code-box{display:none;margin-top:18px;background:#0f0f0f;border:2px solid #25D366;border-radius:12px;padding:20px}
+.code-box .cl{font-size:.72rem;color:#25D366;font-weight:600;margin-bottom:8px}
+.code-num{font-size:2.3rem;font-weight:900;letter-spacing:10px;color:#fff;font-family:monospace}
+.code-hint{font-size:.75rem;color:#555;margin-top:9px;line-height:1.65}
+
+/* Session */
+.sess-box{display:none;margin-top:18px;background:#091509;border:2px solid #25D366;border-radius:12px;padding:20px;text-align:left}
+.sess-box .sl{font-size:.8rem;color:#25D366;font-weight:700;margin-bottom:9px}
+textarea{width:100%;background:#0f0f0f;border:1px solid #222;border-radius:7px;padding:9px;color:#777;font-size:.65rem;font-family:monospace;resize:none;height:72px;outline:none}
+.cp-btn{width:100%;background:#25D366;color:#000;border:none;border-radius:7px;padding:10px;font-weight:700;cursor:pointer;margin-top:9px;font-size:.88rem}
+.cp-btn:hover{background:#1db954}
+.steps{font-size:.73rem;color:#3a3a3a;margin-top:9px;line-height:1.75}
+.steps b{color:#555}
+
+.st{font-size:.82rem;color:#555;margin-top:12px;min-height:18px}
+.st.g{color:#25D366}.st.r{color:#f87171}.st.y{color:#f59e0b}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid #333;border-top-color:#25D366;border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:5px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
 </head>
 <body>
-  <div class="card">
-    <div class="logo">⚡</div>
-    <h1>APEX-MD Pairing</h1>
-    <p class="sub">Get your SESSION_ID in 30 seconds</p>
+<div class="card">
+  <div class="logo">⚡</div>
+  <h1>APEX-MD · Pair Your Bot</h1>
+  <p class="sub">Get your SESSION_ID in seconds</p>
 
-    <div class="step">
-      <div class="step-label">Step 1 — Enter your WhatsApp number</div>
-      <input id="number" type="tel" placeholder="2348012345678 (no + sign)" maxlength="20"/>
-    </div>
+  <div class="tabs">
+    <div class="tab active" id="t-qr"   onclick="sw('qr')">📷 QR Code</div>
+    <div class="tab"        id="t-code" onclick="sw('code')">🔑 Pairing Code</div>
+  </div>
 
-    <button id="pairBtn" onclick="requestCode()">Get Pairing Code</button>
-
-    <div class="code-box" id="codeBox">
-      <div class="label">YOUR PAIRING CODE</div>
-      <div class="code" id="codeText">----</div>
-      <div class="hint">WhatsApp → Linked Devices → Link a Device → "Link with phone number instead"</div>
-    </div>
-
-    <div class="session-box" id="sessionBox">
-      <div class="s-label">✅ PAIRED! Your SESSION_ID:</div>
-      <textarea id="sessionText" readonly></textarea>
-      <button class="copy-btn" onclick="copySession()">📋 Copy SESSION_ID</button>
-      <div style="font-size:0.78rem;color:#555;margin-top:10px;">
-        Paste this into Render → Environment → SESSION_ID → Save → Redeploy
-      </div>
-    </div>
-
-    <div class="status" id="statusMsg"></div>
-
-    <div class="instructions">
-      <b>How to use SESSION_ID on Render:</b><br>
-      1. Copy the SESSION_ID above<br>
-      2. Render dashboard → apex-md-api → <b>Environment</b><br>
-      3. Find <b>SESSION_ID</b> → paste → <b>Save Changes</b><br>
-      4. Service auto-redeploys → bot goes live
+  <!-- QR panel -->
+  <div class="panel active" id="p-qr">
+    <p style="font-size:.82rem;color:#555;margin-bottom:14px">Click to generate a QR code,<br>then scan it with WhatsApp.</p>
+    <button class="btn" id="qrBtn" onclick="startQR()">Generate QR Code</button>
+    <div class="qr-box" id="qrBox">
+      <div class="ql">WhatsApp → Linked Devices → Link a Device → scan</div>
+      <div id="qrEl"></div>
+      <div class="qr-hint">QR refreshes automatically</div>
+      <div class="qr-exp" id="qrExp"></div>
     </div>
   </div>
 
-  <script>
-    let polling = null;
+  <!-- Code panel -->
+  <div class="panel" id="p-code">
+    <div class="lbl">Your WhatsApp number</div>
+    <input id="numIn" type="tel" placeholder="2348012345678  (no + sign)" maxlength="20"/>
+    <button class="btn" id="codeBtn" onclick="doCode()">Get Pairing Code</button>
+    <div class="code-box" id="codeBox">
+      <div class="cl">YOUR PAIRING CODE</div>
+      <div class="code-num" id="codeNum">----</div>
+      <div class="code-hint">WhatsApp → ⋮ Menu → Linked Devices → Link a Device<br>→ <b>"Link with phone number instead"</b> → enter code</div>
+    </div>
+  </div>
 
-    function setStatus(msg, color) {
-      const el = document.getElementById('statusMsg');
-      el.textContent = msg;
-      el.className = 'status ' + (color || '');
-    }
+  <!-- Session result (shared) -->
+  <div class="sess-box" id="sessBox">
+    <div class="sl">✅ Paired! Your SESSION_ID:</div>
+    <textarea id="sessText" readonly></textarea>
+    <button class="cp-btn" onclick="cp()">📋 Copy SESSION_ID</button>
+    <div class="steps">
+      <b>Next:</b> Render → apex-md-api → <b>Environment</b><br>
+      → set <b>SESSION_ID</b> = paste → <b>Save Changes</b><br>
+      → auto-redeploys → bot is live ⚡
+    </div>
+  </div>
 
-    async function requestCode() {
-      const number = document.getElementById('number').value.replace(/[^0-9]/g, '');
-      if (!number || number.length < 10) {
-        setStatus('Enter a valid number', 'red'); return;
+  <div class="st" id="st"></div>
+  <button class="btn btn-ghost" id="rstBtn" onclick="rst()" style="display:none">↺ Start Over</button>
+</div>
+
+<script>
+let poll=null, qrTimer=null, qrObj=null, qrExp=0;
+
+function st(m,c){const e=document.getElementById('st');e.innerHTML=m;e.className='st '+(c||'');}
+function show(id){document.getElementById(id).style.display='block';}
+function hide(id){document.getElementById(id).style.display='none';}
+
+function sw(t){
+  ['qr','code'].forEach(x=>{
+    document.getElementById('t-'+x).classList.toggle('active',x===t);
+    document.getElementById('p-'+x).classList.toggle('active',x===t);
+  });
+  rst(true);
+}
+
+async function rst(silent){
+  clearInterval(poll);clearInterval(qrTimer);poll=qrTimer=null;
+  if(!silent) await fetch('/pair/reset',{method:'POST'}).catch(()=>{});
+  ['qrBox','codeBox','sessBox'].forEach(hide);
+  document.getElementById('qrEl').innerHTML='';
+  if(qrObj){try{qrObj.clear();}catch(_){}qrObj=null;}
+  document.getElementById('qrBtn').disabled=false;
+  document.getElementById('qrBtn').textContent='Generate QR Code';
+  document.getElementById('codeBtn').disabled=false;
+  document.getElementById('codeBtn').textContent='Get Pairing Code';
+  hide('rstBtn'); st('');
+}
+
+function renderQR(data){
+  const el=document.getElementById('qrEl');
+  el.innerHTML='';
+  qrObj=new QRCode(el,{text:data,width:210,height:210,colorDark:'#000',colorLight:'#fff',correctLevel:QRCode.CorrectLevel.M});
+  clearInterval(qrTimer);
+  qrExp=Date.now()+60000;
+  qrTimer=setInterval(()=>{
+    const s=Math.max(0,Math.round((qrExp-Date.now())/1000));
+    document.getElementById('qrExp').textContent=s>0?'Expires in '+s+'s':'Refreshing...';
+  },1000);
+}
+
+function startPoll(){
+  poll=setInterval(async()=>{
+    try{
+      const d=await(await fetch('/pair/status')).json();
+      if(d.status==='paired'&&d.sessionId){
+        clearInterval(poll);clearInterval(qrTimer);
+        document.getElementById('sessText').value=d.sessionId;
+        show('sessBox'); hide('qrBox'); hide('codeBox');
+        show('rstBtn');
+        st('✅ Bot paired successfully!','g');
+      } else if(d.status==='error'){
+        clearInterval(poll);clearInterval(qrTimer);
+        st('❌ '+(d.error||'Error'),'r');
+        document.getElementById('qrBtn').disabled=false;
+        document.getElementById('codeBtn').disabled=false;
+        show('rstBtn');
+      } else if(d.qrData){
+        renderQR(d.qrData);
       }
-      document.getElementById('pairBtn').disabled = true;
-      setStatus('Requesting pairing code...');
-      try {
-        const res  = await fetch('/pair/request', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ number }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          setStatus(data.error || 'Failed', 'red');
-          document.getElementById('pairBtn').disabled = false;
-          return;
-        }
-        document.getElementById('codeText').textContent = data.code;
-        document.getElementById('codeBox').style.display = 'block';
-        setStatus('Waiting for you to enter the code on your phone...', 'green');
-        startPolling();
-      } catch (e) {
-        setStatus('Network error: ' + e.message, 'red');
-        document.getElementById('pairBtn').disabled = false;
-      }
-    }
+    }catch(_){}
+  },2000);
+}
 
-    function startPolling() {
-      polling = setInterval(async () => {
-        try {
-          const res  = await fetch('/pair/status');
-          const data = await res.json();
-          if (data.status === 'paired' && data.sessionId) {
-            clearInterval(polling);
-            document.getElementById('sessionText').value = data.sessionId;
-            document.getElementById('sessionBox').style.display = 'block';
-            document.getElementById('codeBox').style.display = 'none';
-            setStatus('✅ Bot paired successfully!', 'green');
-          } else if (data.status === 'error') {
-            clearInterval(polling);
-            setStatus('Error: ' + data.error, 'red');
-            document.getElementById('pairBtn').disabled = false;
-          }
-        } catch (_) {}
-      }, 2000);
-    }
+async function startQR(){
+  document.getElementById('qrBtn').disabled=true;
+  document.getElementById('qrBtn').innerHTML='<span class="spin"></span>Connecting...';
+  st('<span class="spin"></span>Starting connection...','y');
+  try{
+    const d=await(await fetch('/pair/qr',{method:'POST'})).json();
+    if(!d.ok){st('❌ '+d.error,'r');document.getElementById('qrBtn').disabled=false;return;}
+    show('qrBox');
+    if(d.qrData) renderQR(d.qrData);
+    st('<span class="spin"></span>Waiting for scan...','y');
+    startPoll();
+  }catch(e){st('❌ '+e.message,'r');document.getElementById('qrBtn').disabled=false;}
+}
 
-    function copySession() {
-      const text = document.getElementById('sessionText').value;
-      navigator.clipboard.writeText(text).then(() => {
-        const btn = document.querySelector('.copy-btn');
-        btn.textContent = '✅ Copied!';
-        setTimeout(() => btn.textContent = '📋 Copy SESSION_ID', 2000);
-      });
-    }
-  </script>
+async function doCode(){
+  const num=document.getElementById('numIn').value.replace(/[^0-9]/g,'');
+  if(!num||num.length<10){st('Enter a valid number','r');return;}
+  document.getElementById('codeBtn').disabled=true;
+  document.getElementById('codeBtn').innerHTML='<span class="spin"></span>Requesting...';
+  st('<span class="spin"></span>Getting code...','y');
+  try{
+    const d=await(await fetch('/pair/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({number:num})})).json();
+    if(!d.ok){st('❌ '+d.error,'r');document.getElementById('codeBtn').disabled=false;return;}
+    document.getElementById('codeNum').textContent=d.code;
+    show('codeBox');
+    st('<span class="spin"></span>Waiting for you to enter the code...','y');
+    startPoll();
+  }catch(e){st('❌ '+e.message,'r');document.getElementById('codeBtn').disabled=false;}
+}
+
+function cp(){
+  navigator.clipboard.writeText(document.getElementById('sessText').value).then(()=>{
+    const b=document.querySelector('.cp-btn');
+    b.textContent='✅ Copied!';
+    setTimeout(()=>b.textContent='📋 Copy SESSION_ID',2500);
+  });
+}
+</script>
 </body>
 </html>`);
 });
 
-// ── POST /pair/request — generate pairing code ───────────────
-router.post('/request', async (req, res) => {
-  const { number } = req.body;
-  if (!number) return res.json({ ok: false, error: 'number required' });
-
-  resetState();
-  pairState.status = 'waiting';
-
-  const SESSION_DIR = `/tmp/apex-pair-${Date.now()}`;
-  fs.mkdirSync(SESSION_DIR, { recursive: true });
-
+// ════════════════════════════════════════════════════════════
+//  POST /pair/qr
+// ════════════════════════════════════════════════════════════
+router.post('/qr', async (_req, res) => {
+  reset(); S.status='waiting'; S.mode='qr';
+  const dir = '/tmp/apex-pair-' + Date.now();
+  fs.mkdirSync(dir,{recursive:true}); S.dir=dir;
   try {
-    const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-    const { version }          = await fetchLatestBaileysVersion();
-
-    const sock = makeWASocket({
-      version,
-      auth: {
-        creds: state.creds,
-        keys:  makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-      },
-      printQRInTerminal: false,
-      logger: pino({ level: 'silent' }),
-      browser: ['APEX-MD', 'Chrome', '120.0.0'],
-    });
-
-    pairState.sock = sock;
-    sock.ev.on('creds.update', saveCreds);
-
-    // Wait for socket to be ready then request pairing code
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Socket timeout')), 15000);
-
-      sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if ((qr || connection) && !sock.authState.creds.registered) {
-          clearTimeout(timeout);
-          try {
-            await new Promise(r => setTimeout(r, 2000));
-            const clean = number.replace(/[^0-9]/g, '');
-            const code  = await sock.requestPairingCode(clean);
-            const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
-            pairState.code = formatted;
-            resolve(formatted);
-          } catch (err) {
-            reject(err);
-          }
+    const sock = await mkSock(dir); S.sock=sock;
+    const firstQR = await new Promise((resolve,reject) => {
+      const t = setTimeout(()=>reject(new Error('QR timeout')),20000);
+      sock.ev.on('connection.update', async u => {
+        const {connection,qr,lastDisconnect} = u;
+        if (qr) {
+          S.qrData=qr;
+          if (!S._gotFirstQR) { S._gotFirstQR=true; clearTimeout(t); resolve(qr); }
         }
-
-        if (connection === 'open') {
-          pairState.status = 'paired';
-          await new Promise(r => setTimeout(r, 2000));
-          pairState.sessionId = encodeSession(SESSION_DIR);
-          // cleanup
-          try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch (_) {}
-        }
-
-        if (connection === 'close') {
-          const code = lastDisconnect?.error?.output?.statusCode;
-          if (pairState.status !== 'paired') {
-            pairState.status = 'error';
-            pairState.error  = `Disconnected (${code})`;
-          }
+        if (connection==='open') await handleOpen(dir);
+        if (connection==='close') {
+          const c=lastDisconnect?.error?.output?.statusCode;
+          if (S.status!=='paired') { S.status='error'; S.error='Disconnected ('+c+')'; }
         }
       });
     });
-
-    res.json({ ok: true, code: pairState.code });
-  } catch (err) {
-    pairState.status = 'error';
-    pairState.error  = err.message;
-    try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch (_) {}
-    res.json({ ok: false, error: err.message });
+    res.json({ok:true,qrData:firstQR});
+  } catch(err) {
+    S.status='error'; S.error=err.message;
+    try{fs.rmSync(dir,{recursive:true,force:true});}catch(_){}
+    res.json({ok:false,error:err.message});
   }
 });
 
-// ── GET /pair/status — poll for session ──────────────────────
-router.get('/status', (_req, res) => {
-  res.json({
-    status:    pairState.status,
-    sessionId: pairState.sessionId,
-    error:     pairState.error,
-  });
+// ════════════════════════════════════════════════════════════
+//  POST /pair/request
+// ════════════════════════════════════════════════════════════
+router.post('/request', async (req,res) => {
+  const {number} = req.body;
+  if (!number) return res.json({ok:false,error:'number required'});
+  reset(); S.status='waiting'; S.mode='code';
+  const dir = '/tmp/apex-pair-' + Date.now();
+  fs.mkdirSync(dir,{recursive:true}); S.dir=dir;
+  try {
+    const sock = await mkSock(dir); S.sock=sock;
+    const code = await new Promise((resolve,reject) => {
+      const t = setTimeout(()=>reject(new Error('Timeout')),20000);
+      sock.ev.on('connection.update', async u => {
+        const {connection,qr,lastDisconnect} = u;
+        if ((qr||connection==='connecting') && !sock.authState.creds.registered) {
+          clearTimeout(t);
+          try {
+            await new Promise(r=>setTimeout(r,2500));
+            const raw = await sock.requestPairingCode(String(number).replace(/[^0-9]/g,''));
+            const fmt = raw?.match(/.{1,4}/g)?.join('-') || raw;
+            S.code=fmt; resolve(fmt);
+          } catch(e) { reject(e); }
+        }
+        if (connection==='open') await handleOpen(dir);
+        if (connection==='close') {
+          const c=lastDisconnect?.error?.output?.statusCode;
+          if (S.status!=='paired') { S.status='error'; S.error='Disconnected ('+c+')'; }
+        }
+      });
+    });
+    res.json({ok:true,code});
+  } catch(err) {
+    S.status='error'; S.error=err.message;
+    try{fs.rmSync(dir,{recursive:true,force:true});}catch(_){}
+    res.json({ok:false,error:err.message});
+  }
 });
+
+// ════════════════════════════════════════════════════════════
+//  GET /pair/status
+// ════════════════════════════════════════════════════════════
+router.get('/status', (_req,res) => {
+  res.json({status:S.status, sessionId:S.sessionId, qrData:S.qrData, error:S.error});
+});
+
+// ════════════════════════════════════════════════════════════
+//  POST /pair/reset
+// ════════════════════════════════════════════════════════════
+router.post('/reset', (_req,res) => { reset(); res.json({ok:true}); });
 
 module.exports = router;
