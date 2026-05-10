@@ -465,6 +465,29 @@ router.get('/chats', async (_req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
+//  39. POST /api/download
+//  Proxies all media downloads through the bot (Render IP stays
+//  hidden from TikTok / IG / YouTube etc).
+//
+//  Body: { url, type }
+//    url   — the media URL to download
+//    type  — optional hint: 'video' | 'audio' (default: video)
+//
+//  Returns: { buffer (base64), mimetype, filename }
+//  The bot does the actual download using cobalt v11 /
+//  @distube/ytdl-core and returns the buffer back here.
+//  Timeout is raised to 90s — large files take time.
+// ════════════════════════════════════════════════════════════
+router.post('/download', async (req, res) => {
+  const { url, type } = req.body;
+  if (!url) return fail(res, 'url required');
+  try {
+    const result = await dispatch('download', { url, type: type || 'video' }, 90_000);
+    ok(res, result);
+  } catch (e) { fail(res, e.message, 503); }
+});
+
+// ════════════════════════════════════════════════════════════
 //  CATCH-ALL
 // ════════════════════════════════════════════════════════════
 router.use((req, res) => {
