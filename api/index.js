@@ -196,6 +196,63 @@ body{font-family:'Inter',sans-serif;background:#0a0a0f;color:#e2e8f0;min-height:
 }
 
 // ════════════════════════════════════════════════════════════
+//  3b. POST /api/handle-message  — Process incoming messages
+//      The bot sends every message here. The API handles
+//      command parsing, anti-spam, AI chat, and dispatches
+//      jobs back to the bot for execution.
+// ════════════════════════════════════════════════════════════
+router.post('/handle-message', async (req, res) => {
+  try {
+    const { from, sender, body, isGroup, key, message, pushName } = req.body;
+    if (!from || !sender) return fail(res, 'from and sender required');
+
+    const prefix = process.env.BOT_PREFIX || '.';
+
+    // ── Anti-link check (groups) ───────────────────────────
+    if (isGroup) {
+      const groupData = await db.getGroupSettings(from).catch(() => null);
+      if (groupData?.antiLink) {
+        const hasLink = /https?:\/\/|wa\.me|chat\.whatsapp/i.test(body);
+        if (hasLink) {
+          await dispatch('delete-message', { jid: from, key });
+          return ok(res, { action: 'link_deleted' });
+        }
+      }
+    }
+
+    // ── Non-command messages → AI chat ─────────────────────
+    if (!body.startsWith(prefix)) {
+      if (!isGroup) {
+        const result = await dispatch('ai-chat', { sender, body, pushName }, 15000).catch(() => null);
+        return ok(res, { action: 'ai_chat', result });
+      }
+      return ok(res, { action: 'ignored' });
+    }
+
+    // ── Parse command ──────────────────────────────────────
+    const args        = body.slice(prefix.length).trim().split(/\s+/);
+    const commandName = args.shift().toLowerCase();
+
+    // ── Dispatch command as job ────────────────────────────
+    const result = await dispatch('command', {
+      command: commandName,
+      args,
+      from,
+      sender,
+      isGroup,
+      body,
+      key,
+      message,
+      pushName,
+    }, 15000);
+
+    ok(res, { action: 'command_executed', command: commandName, result });
+  } catch (e) {
+    fail(res, e.message, 503);
+  }
+});
+
+// ════════════════════════════════════════════════════════════
 //  4. POST /api/send  — Send a message to any JID
 // ════════════════════════════════════════════════════════════
 router.post('/send', async (req, res) => {
