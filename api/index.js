@@ -103,63 +103,97 @@ router.get('/bot/ping', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
-//  3. GET /api/menu  — Full command catalogue (JSON)
-//     Read-only — built from the commands directory.
+//  3. GET /api/menu  — Full command catalogue (static JSON)
+//     No local commands folder needed.
 // ════════════════════════════════════════════════════════════
+const MENU_CATALOGUE = [
+  { emoji: '🛡️', category: 'admin', commands: ['antidelete','antilink','antispam','demote','filter','groupinfo','grouptools','hidetag','linkgroup','mute','poll','promote','resetwarn','revoke','setdesc','setname','tagall','unmute','warn','warnings','welcome'] },
+  { emoji: '🤖', category: 'ai', commands: ['analyze','character','chat','clearchat','code','debate','imagine','lyrics','roast','search','story','summarize','translate_ai','voice'] },
+  { emoji: '🎭', category: 'anime', commands: ['react'] },
+  { emoji: '💼', category: 'business', commands: ['autorespond','broadcast'] },
+  { emoji: '📥', category: 'downloader', commands: ['facebook','instagram','mediafire','pinterest','soundcloud','spotify','threads','tiktok','twitter','ytmp4'] },
+  { emoji: '💥', category: 'fun', commands: ['8ball','burn','choose','fact','hangman','horoscope','joke','meme','quote','roll','ship','truth'] },
+  { emoji: '🎮', category: 'games', commands: ['daily','economy','flip','leaderboard','pay','profile','quiz','rob','slots','tictactoe','trivia','work'] },
+  { emoji: '🎬', category: 'media', commands: ['audioeffects','logo','play','sticker','toaudio','toimg','tts','viewonce'] },
+  { emoji: '👑', category: 'owner', commands: ['ban','mode','plugins','restart','send','setprefix','settheme','unban'] },
+  { emoji: '🔒', category: 'protection', commands: ['anticall','antidemote','antifake','antigm','antivv'] },
+  { emoji: '🔧', category: 'utility', commands: ['ascii','base64','calc','currency','define','gitclone','help','ip','menu','morse','myip','password','ping','qr','remind','runtime','schedule','short','speed','translate','weather','whois'] },
+];
+
+const TOTAL_CMDS = MENU_CATALOGUE.reduce((sum, c) => sum + c.commands.length, 0);
+
 router.get('/menu', (req, res) => {
-  try {
-    const { commands } = require('../lib/handler');
-
-    const catEmoji = {
-      admin:      '🛡️',
-      ai:         '🤖',
-      anime:      '🎭',
-      business:   '💼',
-      downloader: '📥',
-      fun:        '💥',
-      games:      '🎮',
-      media:      '🎬',
-      owner:      '👑',
-      protection: '🔒',
-      utility:    '🔧',
-    };
-
-    // Build grouped catalogue
-    const catalogue = {};
-    for (const [, cmd] of commands.entries()) {
-      const cat = cmd.category || 'utility';
-      if (!catalogue[cat]) {
-        catalogue[cat] = {
-          emoji:    catEmoji[cat] || '📌',
-          category: cat,
-          commands: [],
-        };
-      }
-      catalogue[cat].commands.push({
-        name:      cmd.name,
-        aliases:   cmd.aliases   || [],
-        desc:      cmd.desc      || '',
-        usage:     cmd.usage     || `.${cmd.name}`,
-        public:    cmd.public    ?? true,
-        adminOnly: cmd.adminOnly ?? false,
-        ownerOnly: cmd.ownerOnly ?? false,
-        groupOnly: cmd.groupOnly ?? false,
-      });
-    }
-
-    const total = [...commands.values()].length;
-
-    ok(res, {
-      bot:        config.BOT_NAME,
-      version:    config.BOT_VERSION,
-      service:    'apex-md-api',
-      totalCmds:  total,
-      categories: Object.values(catalogue),
-    });
-  } catch (e) {
-    fail(res, e.message, 500);
+  // If client wants HTML (browser), serve the visual menu page
+  if (req.headers.accept && req.headers.accept.includes('text/html')) {
+    return res.send(buildMenuHTML());
   }
+  ok(res, {
+    bot:        config.BOT_NAME,
+    version:    config.BOT_VERSION,
+    service:    'apex-md-api',
+    totalCmds:  TOTAL_CMDS,
+    categories: MENU_CATALOGUE,
+  });
 });
+
+// ── Beautiful HTML menu page ──────────────────────────────────
+function buildMenuHTML() {
+  const catCards = MENU_CATALOGUE.map(cat => `
+    <div class="cat-card">
+      <div class="cat-header">${cat.emoji} ${cat.category.toUpperCase()}</div>
+      <div class="cmd-list">${cat.commands.map(c => `<span class="cmd">.${c}</span>`).join('')}</div>
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APEX-MD | Command Menu</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',sans-serif;background:#0a0a0f;color:#e2e8f0;min-height:100vh}
+.hero{position:relative;text-align:center;padding:60px 20px 40px;background:linear-gradient(135deg,#1a0533 0%,#0d1b2a 50%,#0a0a0f 100%);overflow:hidden}
+.hero::before{content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle,rgba(139,92,246,.08) 0%,transparent 50%);animation:pulse 8s infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+.logo-img{width:140px;height:140px;border-radius:50%;border:3px solid rgba(139,92,246,.6);box-shadow:0 0 40px rgba(139,92,246,.3);margin-bottom:20px;object-fit:cover}
+.hero h1{font-size:2.5rem;font-weight:800;background:linear-gradient(135deg,#8b5cf6,#06b6d4);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+.hero p{color:#94a3b8;font-size:1.1rem}
+.stats{display:flex;justify-content:center;gap:30px;margin-top:20px;flex-wrap:wrap}
+.stat{background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.2);border-radius:12px;padding:12px 24px}
+.stat-num{font-size:1.5rem;font-weight:800;color:#8b5cf6}
+.stat-label{font-size:.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px}
+.container{max-width:1200px;margin:0 auto;padding:30px 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:20px}
+.cat-card{background:rgba(15,15,25,.8);border:1px solid rgba(139,92,246,.15);border-radius:16px;padding:24px;transition:all .3s}
+.cat-card:hover{border-color:rgba(139,92,246,.4);transform:translateY(-2px);box-shadow:0 8px 30px rgba(139,92,246,.1)}
+.cat-header{font-size:1.1rem;font-weight:700;margin-bottom:14px;color:#c4b5fd}
+.cmd-list{display:flex;flex-wrap:wrap;gap:8px}
+.cmd{font-family:'JetBrains Mono',monospace;font-size:.78rem;background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.2);color:#a78bfa;padding:4px 10px;border-radius:6px;transition:all .2s}
+.cmd:hover{background:rgba(139,92,246,.25);color:#fff}
+.footer{text-align:center;padding:40px 20px;color:#475569;font-size:.85rem}
+</style>
+</head>
+<body>
+<div class="hero">
+  <img src="https://raw.githubusercontent.com/mr-ntando-dev/apex-md-bot/main/assets/apex-logo.png" alt="APEX-MD" class="logo-img" onerror="this.src='https://ui-avatars.com/api/?name=APEX+MD&size=140&background=8b5cf6&color=fff&bold=true'">
+  <h1>⚡ APEX-MD</h1>
+  <p>The Most Advanced WhatsApp Multi-Device Bot</p>
+  <div class="stats">
+    <div class="stat"><div class="stat-num">${TOTAL_CMDS}</div><div class="stat-label">Commands</div></div>
+    <div class="stat"><div class="stat-num">${MENU_CATALOGUE.length}</div><div class="stat-label">Categories</div></div>
+    <div class="stat"><div class="stat-num">v${config.BOT_VERSION}</div><div class="stat-label">Version</div></div>
+  </div>
+</div>
+<div class="container">
+  <div class="grid">${catCards}</div>
+</div>
+<div class="footer">APEX-MD &copy; 2026 &mdash; Powered by apex-md-api</div>
+</body>
+</html>`;
+}
 
 // ════════════════════════════════════════════════════════════
 //  4. POST /api/send  — Send a message to any JID
